@@ -1,5 +1,5 @@
-/*jslint white:true,sloppy:true */
-/*global window:true,freedom:true,setTimeout,console,VCardStore,global */
+/*jslint white:true,sloppy:true, node:true */
+/*global window:true,freedom:true,setTimeout,console,global */
 
 /**
  * Implementation of a Social provider for freedom.js that
@@ -119,6 +119,9 @@ IRCSocialProvider.prototype.connect = function(continuation) {
   irc_factory.Events.onAny(function (msg) {
     this.logger.warn(JSON.stringify(msg));
   }.bind(this));
+  irc_factory.Events.on('social.registered', this.onOnline.bind(this, continuation));
+  irc_factory.Events.on('social.who', this.updateRoster.bind(this));
+  irc_factory.Events.on('social.privmsg', this.receiveMessage.bind(this));
 };
 
 /**
@@ -168,46 +171,8 @@ IRCSocialProvider.prototype.sendMessage = function(to, msg, continuation) {
     });
     return;
   }
-
-  // If the destination client is ONLINE (i.e. using the same type of client)
-  // send this message with type 'normal' so it only reaches that client,
-  // otherwise use type 'chat' to send to all clients.
-  // Sending all messages as type 'normal' means we can't communicate across
-  // different client types, but sending all as type 'chat' means messages
-  // will be broadcast to all clients.
-  var messageType = (this.vCardStore.getClient(to).status === 'ONLINE') ?
-      'normal' : 'chat';
   
-  try {
-    // After each message is received, reset the timeout to
-    // wait for at least 100ms to batch other messages received 
-    // in that window. However, if the oldest message in the batch 
-    // was received over 2s ago, don't reset the timeout, and 
-    // just allow the current timeout to execute.
-    this.messages.push(msg);
-    if (!this.sendMessagesTimeout) {
-      this.timeOfFirstMessageInBatch = Date.now();
-    }
-    if ((Date.now() - this.timeOfFirstMessageInBatch < 2000) ||
-        !this.sendMessagesTimeout) {
-      clearTimeout(this.sendMessagesTimeout);
-      this.sendMessagesTimeout = setTimeout(function() {
-        this.client.send(new window.XMPP.Element('message', {
-          to: to,
-          type: messageType
-        }).c('body').t(JSON.stringify(this.messages)));
-        this.messages = [];
-        this.sendMessagesTimeout = null;
-      }.bind(this), 100);  
-    }
-  } catch(e) {
-    this.logger.error(e.stack);
-    continuation(undefined, {
-      errcode: 'UNKNOWN',
-      message: e.message
-    });
-    return;
-  }
+  this.client.privmsg(to, JSON.stringify(msg));
   continuation();
 };
 
@@ -254,167 +219,65 @@ IRCSocialProvider.prototype.onMessage = function(msg) {
 };
 
 /**
- * Receive a textual message from XMPP and relay it to
+ * Receive a textual message from IRC and relay it to
  * the parent module.
  * @method receiveMessage
  * @private
- * @param {String} from The Client ID of the message origin
- * @param {String} msgs A batch of messages.
+ * @param {String} msg The messag,e sender, and time
  */
-IRCSocialProvider.prototype.receiveMessage = function(from, msgs) {
-  var i, parsedMessages = JSON.parse(msgs);
-  for (i = 0; i < parsedMessages.length; i+=1) {
+IRCSocialProvider.prototype.receiveMessage = function(msg) {
+  var parsedMessage;
+
+  this.logger.log('Got Message!', msg);
+  if (msg.target === this.credentials.userId) {
+    try {
+      parsedMessage = JSON.parse(msg);
+    } catch (e) {
+      return;
+    }
     this.dispatchEvent('onMessage', {
-      from: this.vCardStore.getClient(from),
-      to: this.vCardStore.getClient(this.id),
-      message: parsedMessages[i]
+      from: {
+        userId: msg.nickname,
+        clientId: msg.nickname,
+        status: "ONLINE",
+        lastUpdated: msg.time,
+        lastSeen: msg.time
+      },
+      message: parsedMessage
     });
   }
 };
 
-/**
- * Reply to a capability inquiry with client abilities.
- * @method sendCapabilities
- * @private
- * @param {String} to The client requesting capabilities
- * @param {XMPP.Stanza} msg The request message
- */
-IRCSocialProvider.prototype.sendCapabilities = function(to, msg) {
-  var query = msg.getChild('query');
-  
-  msg.attrs.to = msg.attrs.from;
-  delete msg.attrs.from;
-  msg.attrs.type = 'result';
-
-  query.c('identity', {
-    category: 'client',
-    name: this.loginOpts.agent,
-    type: 'bot'
-  }).up()
-  .c('feature', {'var': 'http://jabber.org/protocol/caps'}).up()
-  .c('feature', {'var': 'http://jabber.org/protocol/disco#info'}).up()
-  .c('feature', {'var': this.loginOpts.url}).up();
-  this.client.send(msg);
-};
-
-/**
- * Receive an XMPP Presence change message from another user.
- * @method onPresence
- * @private
- * @param {XMPP.Stanza} msg The incoming message
- */
-IRCSocialProvider.prototype.onPresence = function(msg) {
-  var status = msg.getChildText('show') || 'online',
-      user = msg.attrs.from,
-      hash;
-  if (msg.attrs.type === 'unavailable') {
-    status = 'unavailable';
-  }
-
-  if (msg.getChild('x') && msg.getChild('x').getChildText('photo')) {
-    hash = msg.getChild('x').getChildText('photo');
-  }
-  
-  if (status === 'unavailable') {
-    this.vCardStore.updateProperty(user, 'status', 'OFFLINE');
-  } else {
-    if (msg.getChild('c') && msg.getChild('c').attrs.node === this.loginOpts.url) {
-      this.vCardStore.updateProperty(user, 'status', 'ONLINE');
-    } else {
-      this.vCardStore.updateProperty(user, 'status', 'ONLINE_WITH_OTHER_APP');
-    }
-  }
-  
-  this.vCardStore.updateProperty(user, 'xmppStatus', status);
-
-  this.vCardStore.refreshContact(user, hash);
-};
-
 IRCSocialProvider.prototype.updateRoster = function(msg) {
-  var from = msg.attrs.from || msg.attrs.to,
-      query = msg.getChild('query'),
-      vCard = msg.getChild('vCard'),
-      items, i;
-
-  // Response to Query
-  if (query && query.attrs.xmlns === 'jabber:iq:roster') {
-    items = query.getChildren('item');
-    for (i = 0; i < items.length; i += 1) {
-      if(items[i].attrs.jid && items[i].attrs.name) {
-        this.vCardStore.updateUser(items[i].attrs.jid, 'name',
-            items[i].attrs.name);
-        this.vCardStore.refreshContact(items[i].attrs.jid);
-      }
-    }
-  }
-
-  // Response to photo
-  if (vCard && vCard.attrs.xmlns === 'vcard-temp') {
-    this.vCardStore.updateVcard(from, vCard);
-  }
+  this.logger.log('Got channel list', msg);
 };
 
-IRCSocialProvider.prototype.sawClient = function(client) {
-  this.vCardStore.updateProperty(client, 'timestamp', new Date());
-};
-
-IRCSocialProvider.prototype.onOnline = function(continuation) {
-  // Announce.
-  this.client.send(new window.XMPP.Element('presence', {})
-      .c('show').t('xa').up() // Mark status 'extended away'
-      .c('c', { // Advertise capabilities
-        xmlns: 'http://jabber.org/protocol/caps',
-        node: this.loginOpts.url,
-        ver: this.loginOpts.version,
-        hash: 'fixed'
-      }).up());
+IRCSocialProvider.prototype.onOnline = function(continuation, ircInfo) {
+  // Join Channel.
+  this.client.join(this.credentials.room ||
+                   '#freedom-' + (this.loginOpts.agent || 'social'));
 
   this.status = 'ONLINE';  
-  // Get roster.
-  this.client.send(new window.XMPP.Element('iq', {type: 'get'})
-      .c('query', {
-        xmlns: 'jabber:iq:roster'
-      }).up());
   
   // Update status.
-  this.vCardStore.updateProperty(this.id, 'status', 'ONLINE');
-  this.vCardStore.refreshContact(this.id, null);
-  
-  continuation(this.vCardStore.getClient(this.id));
+  continuation({
+    userId: ircInfo.nickname,
+    clientId: ircInfo.nickname,
+    status: this.status,
+    timestamp: ircInfo.time
+  });
 };
 
 IRCSocialProvider.prototype.logout = function(continuation) {
   var userId = this.credentials? this.credentials.userId : null;
 
-  this.status = 'offline';
+  this.status = 'OFFLINE';
   this.credentials = null;
   if (this.client) {
-    this.client.send(new window.XMPP.Element('presence', {
-      type: 'unavailable'
-    }));
-    this.client.end();
+    this.client.disconnect();
     this.client = null;
   }
   continuation();
-};
-
-IRCSocialProvider.prototype.requestUserStatus = function(user) {
-  if (!this.client) {
-    this.logger.warn('User status request to ' + user + ' dropped, no client available.');
-    return;
-  }
-  this.client.send(new window.XMPP.Element('iq', {
-    type: 'get',
-    to: user
-  }).c('vCard', {'xmlns': 'vcard-temp'}).up());
-};
-
-IRCSocialProvider.prototype.onUserChange = function(card) {
-  this.dispatchEvent('onUserProfile', card);
-};
-
-IRCSocialProvider.prototype.onClientChange = function(card) {
-  this.dispatchEvent('onClientState', card);
 };
 
 // Register provider when in a module context.

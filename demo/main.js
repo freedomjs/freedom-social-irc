@@ -33,7 +33,7 @@ Chat.prototype.login = function() {
   });
   promise.then(function (ret) {
     this.myClientState = ret;
-    logger.log("onLogin", this.myClientState);
+    logger.log("onLogin:", this.myClientState);
     if (ret.status === this.social.STATUS.ONLINE) {
       this.dispatchEvent('recv-uid', ret.clientId);
       this.dispatchEvent('recv-status', "online");
