@@ -115,9 +115,9 @@ IRCSocialProvider.prototype.connect = function(continuation) {
     });
     return;
   }
-  irc_factory.Events.on('*' , function (msg) {
+  irc_factory.Events.onAny(function (msg) {
     this.logger.warn(JSON.stringify(msg));
-  });
+  }.bind(this));
 };
 
 /**
