@@ -99,7 +99,8 @@ IRCSocialProvider.prototype.connect = function(continuation) {
     nick: this.credentials.userId,
     user: this.credentials.userId,
     server: this.credentials.host,
-    realname: '',
+    hostname: 'localhost',
+    realname: '-',
     port: this.credentials.port,
     secure: false
   };
