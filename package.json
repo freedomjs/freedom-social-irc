@@ -1,0 +1,33 @@
+{
+  "name": "freedom-social-irc",
+  "version": "0.0.1",
+  "description": "IRC Social provider for freedom.js",
+  "main": "index.js",
+  "scripts": {
+    "test": "grunt test"
+  },
+  "keywords": [
+    "irc",
+    "freedomjs"
+  ],
+  "author": "Will Scott <willscott@gmail.com> (https://wills.co.tt)",
+  "license": "Apache 2.0",
+  "devDependencies": {
+    "browserify": "^6.3.3",
+    "freedom": "^0.6.7",
+    "freedom-for-node": "^0.2.3",
+    "grunt": "^0.4.5",
+    "grunt-browserify": "^3.2.1",
+    "grunt-contrib-jshint": "^0.10.0",
+    "irc-factory": "^1.10.1",
+
+    "lodash.contains": "^2.4.1",
+    "lodash.difference": "^2.4.1",
+    "lodash.intersection": "^2.4.1",
+    "lodash.isarray": "^2.4.1",
+    "lodash.isfunction": "^2.4.1",
+    "lodash.omit": "^2.4.1",
+    "lodash.without": "^2.4.1",
+    "lodash.wrap": "^2.4.1"
+  }
+}

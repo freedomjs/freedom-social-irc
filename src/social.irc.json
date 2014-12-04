@@ -1,0 +1,24 @@
+{
+  "name": "IRC Social Provider",
+  "description": "Social provider using IRC",
+  "app": {
+    "script": [ 
+      "socialprovider.js"
+    ]
+  },
+  "provides": [
+    "social"
+  ],
+  "permissions": [
+    "core.tcpsocket",
+    "core.udpsocket",
+    "core.view",
+    "core.storage"
+  ],
+  "views": {
+    "irc-login": {
+      "main": "irc-view.html",
+      "files": [ "irc-view.js" ]
+    }
+  }
+}

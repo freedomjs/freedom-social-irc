@@ -1,0 +1,1 @@
+../src/irc-view.js
