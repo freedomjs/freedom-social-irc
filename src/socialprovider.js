@@ -23,6 +23,7 @@ var IRCSocialProvider = function(dispatchEvent) {
   this.client = null;
   this.credentials = null;
   this.loginOpts = null;
+  this.buddies = {};
 
   // Logger
   this.logger = function() {};
@@ -87,14 +88,14 @@ IRCSocialProvider.prototype.onCredentials = function(continuation, msg) {
 };
 
 /**
- * Create an XMPP.Client, and begin connection to the server.
- * Uses settings from most recent 'login()' call, and from
+ * Create the IRC client, and begin connection to the server.
+ * Uses settings from most recent 'login()' call, and
  * credentials retrieved from the view.
  * @method connect
  * @private
  * @param {Function} continuation Callback upon connection
  */
-IRCSocialProvider.prototype.connect = function(continuation) {
+IRCSocialProvider.prototype.connect = function (continuation) {
   var connectOpts = {
     nick: this.credentials.userId,
     user: this.credentials.userId,
@@ -114,13 +115,14 @@ IRCSocialProvider.prototype.connect = function(continuation) {
       errcode: 'LOGIN_FAILEDCONNECTION',
       message: e.message
     });
+    this.client = null;
     return;
   }
   irc_factory.Events.onAny(function (msg) {
     this.logger.warn(JSON.stringify(msg));
   }.bind(this));
   irc_factory.Events.on('social.registered', this.onOnline.bind(this, continuation));
-  irc_factory.Events.on('social.who', this.updateRoster.bind(this));
+  irc_factory.Events.on('social.names', this.updateRoster.bind(this));
   irc_factory.Events.on('social.privmsg', this.receiveMessage.bind(this));
 };
 
@@ -135,23 +137,17 @@ IRCSocialProvider.prototype.clearCachedCredentials  = function(continuation) {
 
 /**
  * Returns all the <client_state>s that we've seen so far (from any 'onClientState' event)
- * Note: this instance's own <client_state> will be somewhere in this list
- * Use the clientId returned from social.login() to extract your element
- * 
- * @method getClients
- * @return {Object} { 
- *    'clientId1': <client_state>,
- *    'clientId2': <client_state>,
- *     ...
- * } List of <client_state>s indexed by clientId
- *   On failure, rejects with an error code (see above)
+ * Note that buddies is dictionary keyed by IRC handle, with
+ * keys sufficient to satisfy both the <user_profile> and the <client_state>
+ * connections, since this provider can't distinguish multiple connections
+ * by a single user.
  */
 IRCSocialProvider.prototype.getClients = function(continuation) {
-  continuation(this.vCardStore.getClients());
+  continuation(this.buddies);
 };
 
 IRCSocialProvider.prototype.getUsers = function(continuation) {
-  continuation(this.vCardStore.getUsers());
+  continuation(this.buddies);
 };
 
 /**
@@ -177,48 +173,6 @@ IRCSocialProvider.prototype.sendMessage = function(to, msg, continuation) {
 };
 
 /**
- * Handle messages from the XMPP client.
- * @method onMessage
- * @private
- */
-IRCSocialProvider.prototype.onMessage = function(msg) {
-  // Is it a message?
-  if (msg.is('message') && msg.getChildText('body') && msg.attrs.type !== 'error') {
-    this.sawClient(msg.attrs.from);
-    // TODO: check the agent matches our resource Id so we don't pick up chats not directed
-    // at this client.
-    this.receiveMessage(msg.attrs.from, msg.getChildText('body'));
-    /*
-    if (msg.attrs.to.indexOf(this.loginOpts.agent) !== -1) {
-      this.receiveMessage(msg.attrs.from, msg.getChildText('body'));
-    } else {
-      // TODO: relay chat messages from other clients in some way.
-      this.logger.warn('Ignoring Chat Message: ' + JSON.stringify(msg.attrs));
-    }
-    */
-  // Is it a status request?
-  } else if (msg.is('iq') && msg.attrs.type === 'get') {
-    if (msg.getChild('query') && msg.getChild('query').attrs.xmlns ===
-        'http://jabber.org/protocol/disco#info') {
-      this.sawClient(msg.attrs.from);
-
-      this.sendCapabilities(msg.attrs.from, msg);      
-    }
-  // Is it a staus response?
-  } else if (msg.is('iq') && (msg.attrs.type === 'result' ||
-      msg.attrs.type === 'set')) {
-    this.updateRoster(msg);
-  // Is it a status?
-  } else if (msg.is('presence')) {
-    this.onPresence(msg);
-  // Is it something we don't understand?
-  } else {
-    this.logger.warn('Dropped unknown XMPP message');
-    this.logger.warn(msg);
-  }
-};
-
-/**
  * Receive a textual message from IRC and relay it to
  * the parent module.
  * @method receiveMessage
@@ -228,11 +182,15 @@ IRCSocialProvider.prototype.onMessage = function(msg) {
 IRCSocialProvider.prototype.receiveMessage = function(msg) {
   var parsedMessage;
 
-  this.logger.log('Got Message!', msg);
-  if (msg.target === this.credentials.userId) {
+  if (msg.target === this.credentials.userId && msg.message) {
     try {
-      parsedMessage = JSON.parse(msg);
+      parsedMessage = JSON.parse(msg.message);
     } catch (e) {
+      this.logger.log('Got Malformed message from' + msg.nickname);
+      return;
+    }
+    if (this.buddies.indexOf(msg.nickname) === -1) {
+      this.logger.warn('Dropping message from unknown user ' + msg.nickname);
       return;
     }
     this.dispatchEvent('onMessage', {
@@ -249,7 +207,21 @@ IRCSocialProvider.prototype.receiveMessage = function(msg) {
 };
 
 IRCSocialProvider.prototype.updateRoster = function(msg) {
-  this.logger.log('Got channel list', msg);
+  var i;
+  for (i = 0; i < msg.names.length; i += 1) {
+    if (!this.buddies[msg.names[i]]) {
+      this.buddies[msg.names[i]] = {
+        userId: msg.names[i],
+        name: msg.names[i],
+        clientId: msg.names[i],
+        status: 'ONLINE',
+        lastUpdated: msg.time,
+        lastSeen: msg.time
+      };
+      this.dispatchEvent('onClientState', this.buddies[msg.names[i]]);
+    }
+  }
+  this.logger.log('Channel List Received');
 };
 
 IRCSocialProvider.prototype.onOnline = function(continuation, ircInfo) {
@@ -258,20 +230,23 @@ IRCSocialProvider.prototype.onOnline = function(continuation, ircInfo) {
                    '#freedom-' + (this.loginOpts.agent || 'social'));
 
   this.status = 'ONLINE';  
-  
-  // Update status.
-  continuation({
+  this.buddies = {};
+  this.buddies[ircInfo.nickname] = {
     userId: ircInfo.nickname,
+    name: ircInfo.realname || ircInfo.username || ircInfo.nickname,
     clientId: ircInfo.nickname,
     status: this.status,
-    timestamp: ircInfo.time
-  });
+    lastUpdated: ircInfo.time,
+    lastSeen: ircInfo.time
+  };
+  
+  // Update status.
+  continuation(this.buddies[ircInfo.nickname]);
 };
 
 IRCSocialProvider.prototype.logout = function(continuation) {
-  var userId = this.credentials? this.credentials.userId : null;
-
   this.status = 'OFFLINE';
+  this.buddies = {};
   this.credentials = null;
   if (this.client) {
     this.client.disconnect();
